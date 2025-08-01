@@ -1,0 +1,482 @@
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+// The cloudbase SDK is now loaded dynamically in a useEffect hook to prevent build errors.
+import { Plus, Loader, X, Edit, Check, Archive, CheckCircle, MessageSquare, Download, Upload, BarChart2, Ban, AlertTriangle, Bell, Trash2, Settings } from 'lucide-react';
+
+// --- Tencent Cloud Base (TCB) Configuration ---
+// 请在这里替换为您自己的腾讯云环境ID
+const cloudbaseConfig = {
+    env: "cloud1-8gap9b2kd3ba5938" 
+};
+
+// --- Initial Constants for Dropdowns (will be used if Firestore data is not available) ---
+const INITIAL_DEPARTMENTS = ["环保技术咨询事业部", "水土技术咨询事业部", "能源双碳技术咨询事业部"];
+const INITIAL_SALES_PERSONS = ["吕鹏", "程晨", "王光耀", "张维杰", "张志鑫", "李锦钊", "刘亚杰", "张鹏航", "韩开峰", "樊常府", "王少楠", "董强", "李猛森"];
+const INITIAL_PROJECT_MANAGERS = ["郭亮", "李海清", "范顺丽", "王安龙", "郭贝贝", "魏进宇", "苏新为", "冯腾波", "牛晓龙", "苌晓林", "谷春超", "翟绰", "王伯勋", "冯腾腾", "李世博", "程苗苗", "刘鹏飞"];
+const TASK_TYPES = ["环评报告表", "环评报告书", "环评登记表", "排污许可证申请", "排污许可证变更", "排污许可证延续", "排污许可登记", "突发环境应急预案", "执行报告", "污染源数据填报", "环评验收", "清洁生产审核", "清洁生产验收", "一厂一策", "设备拆除污染防治方案", "设备拆除污染防治应急预案", "设备拆除污染防治报告", "土壤隐患排查方案", "土壤隐患排查报告", "土壤自行监测方案", "土壤自行监测报告", "土壤污染状况调查方案", "土壤污染状况调查报告", "土壤污染风险评估报告", "土壤修复方案", "土壤修复工程", "矿山修复方案", "危废鉴别", "水土保持方案报告表", "水土保持方案报告书", "水土保持监测", "水土保持验收", "水平衡报告表", "水平衡报告书", "水资源论证", "排污口论证", "社稳评估", "节能评估", "能源审计", "可研报告", "备案报告", "碳排放核算", "碳排放核查", "碳排放源清单"];
+
+// --- Helper Functions ---
+const formatDate = (date) => {
+    if (!date) return '';
+    const jsDate = new Date(date);
+    try {
+        return jsDate.toISOString().split('T')[0];
+    } catch (e) {
+        return '';
+    }
+};
+
+const formatDateTime = (date) => {
+    if (!date) return '';
+    const jsDate = new Date(date);
+    try {
+        return jsDate.toLocaleString('zh-CN');
+    } catch (e) {
+        return '';
+    }
+};
+
+const SCRIPTS = {
+    tcb: 'https://unpkg.com/@cloudbase/js-sdk@2.10.1/dist/cloudbase.full.js',
+    xlsx: 'https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js',
+    jspdf: 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js',
+    jspdfAutotable: 'https://cdn.jsdelivr.net/npm/jspdf-autotable@3.5.23/dist/jspdf.plugin.autotable.min.js',
+    html2canvas: 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js',
+};
+
+const loadScript = (src) => {
+    return new Promise((resolve, reject) => {
+        if (document.querySelector(`script[src="${src}"]`)) {
+            return resolve();
+        }
+        const script = document.createElement('script');
+        script.src = src;
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error(`Failed to load script ${src}`));
+        document.head.appendChild(script);
+    });
+};
+
+// --- Generic Export Function ---
+const exportData = async (format, tasksToExport, fileName) => {
+    const dataForExport = tasksToExport.map(task => ({
+        "任务编号": task.customTaskId, "项目名称": task.projectName, "任务类型": task.taskType, "所属部门": task.department,
+        "合同金额": task.contractAmount, "单位": task.contractUnit, "业务人员": task.salesPerson, "项目负责人": task.projectManager,
+        "任务下达时间": formatDate(task.createdAt), "合同规定完成日期": formatDate(task.contractualDueDate), "实际完成日期": formatDate(task.actualCompletionDate),
+        "最新进展": (task.progressDetails && task.progressDetails.length > 0) ? task.progressDetails.sort((a,b) => b.timestamp - a.timestamp)[0].text : "",
+        "是否存档": task.isArchived ? "是" : "否", "状态": task.status
+    }));
+
+    if (dataForExport.length === 0) {
+        alert("没有可导出的任务。");
+        return;
+    }
+
+    try {
+        if (format === 'excel') {
+            await loadScript(SCRIPTS.xlsx);
+            const ws = window.XLSX.utils.json_to_sheet(dataForExport);
+            const wb = window.XLSX.utils.book_new();
+            window.XLSX.utils.book_append_sheet(wb, ws, "Tasks");
+            window.XLSX.writeFile(wb, `${fileName}_${formatDate(new Date())}.xlsx`);
+        } else if (format === 'pdf') {
+            await loadScript(SCRIPTS.jspdf);
+            await loadScript(SCRIPTS.jspdfAutotable);
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF({ orientation: 'landscape' });
+            
+            // NOTE: jsPDF requires a custom font for CJK support. This is a complex setup.
+            // This implementation uses a standard font and may result in garbled characters.
+            const head = [Object.keys(dataForExport[0])];
+            const body = dataForExport.map(Object.values);
+            doc.autoTable({ head, body });
+            doc.save(`${fileName}_${formatDate(new Date())}.pdf`);
+        } else if (format === 'png') {
+            alert("图片导出功能将捕获当前主列表的视图。请确保您想导出的数据显示在屏幕上。");
+            await loadScript(SCRIPTS.html2canvas);
+            const table = document.getElementById('task-table-for-export');
+            if (!table) { alert("找不到要导出的表格。"); return; }
+            const canvas = await window.html2canvas(table);
+            const image = canvas.toDataURL("image/png", 1.0);
+            const link = document.createElement('a');
+            link.download = `${fileName}_${formatDate(new Date())}.png`;
+            link.href = image;
+            link.click();
+        }
+    } catch (error) {
+        console.error("Export error:", error);
+        alert(`导出为 ${format} 失败。请检查控制台获取更多信息。`);
+    }
+};
+
+
+// --- Task Modal Component for Add/Edit ---
+const TaskModal = ({ isOpen, onClose, onSave, task, error, setError, managementData }) => {
+    const [formData, setFormData] = useState({});
+    
+    useEffect(() => {
+        if (isOpen) {
+            setError(null);
+            const initialData = {
+                customTaskId: 'HB', projectName: '', taskType: '', department: '',
+                contractAmount: '', contractUnit: '元', salesPerson: '', projectManager: '',
+                isArchived: false, status: 'inprogress', contractualDueDate: '', actualCompletionDate: '', 
+                progressDetails: [], createdAt: new Date(),
+            };
+            if (task) {
+                setFormData({ ...initialData, ...task, contractAmount: task.contractAmount || '', contractualDueDate: formatDate(task.contractualDueDate), actualCompletionDate: formatDate(task.actualCompletionDate), createdAt: task.createdAt ? new Date(task.createdAt) : new Date() });
+            } else { setFormData(initialData); }
+        }
+    }, [task, isOpen, setError]);
+
+    if (!isOpen) return null;
+    const handleChange = (e) => { const { name, value, type, checked } = e.target; setFormData(prev => ({ ...prev, [name]: type === 'checkbox' ? checked : value })); };
+    const handleSubmit = (e) => { e.preventDefault(); if (!task && !formData.customTaskId) { setError("任务编号是必填项。"); return; } onSave(formData, !!task); };
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center p-4">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col text-gray-800">
+                <header className="flex justify-between items-center p-4 border-b border-gray-200">
+                    <h2 className="text-xl font-bold text-gray-900">{task ? '编辑任务详情' : '创建新任务'}</h2>
+                    <button onClick={onClose} className="p-2 rounded-full hover:bg-gray-100"><X className="text-gray-500" /></button>
+                </header>
+                <form onSubmit={handleSubmit} className="p-6 overflow-y-auto">
+                    {error && <div className="mb-4 bg-red-100 border border-red-300 text-red-800 px-4 py-2 rounded-lg text-center text-sm">{error}</div>}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div className="space-y-4">
+                            <div><label className="block text-sm font-medium text-gray-600 mb-1">任务编号</label><input type="text" name="customTaskId" value={formData.customTaskId || ''} onChange={handleChange} disabled={!!task} className="w-full bg-gray-50 border border-gray-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-200 disabled:cursor-not-allowed" required /></div>
+                            <div><label className="block text-sm font-medium text-gray-600 mb-1">项目名称</label><input type="text" name="projectName" value={formData.projectName || ''} onChange={handleChange} className="w-full bg-gray-50 border border-gray-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-indigo-500" required /></div>
+                            <div><label className="block text-sm font-medium text-gray-600 mb-1">业务人员</label><select name="salesPerson" value={formData.salesPerson || ''} onChange={handleChange} className="w-full bg-gray-50 border border-gray-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-indigo-500"><option value="" disabled>请选择业务人员</option>{managementData.salesPersons.map(p => <option key={p} value={p}>{p}</option>)}</select></div>
+                        </div>
+                        <div className="space-y-4">
+                            <div><label className="block text-sm font-medium text-gray-600 mb-1">项目负责人</label><select name="projectManager" value={formData.projectManager || ''} onChange={handleChange} className="w-full bg-gray-50 border border-gray-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-indigo-500"><option value="" disabled>请选择项目负责人</option>{managementData.projectManagers.map(p => <option key={p} value={p}>{p}</option>)}</select></div>
+                            <div><label className="block text-sm font-medium text-gray-600 mb-1">任务类型</label><input list="task-types" name="taskType" value={formData.taskType || ''} onChange={handleChange} className="w-full bg-gray-50 border border-gray-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-indigo-500" placeholder="请选择或输入任务类型" /><datalist id="task-types">{TASK_TYPES.map(t => <option key={t} value={t} />)}</datalist></div>
+                            <div><label className="block text-sm font-medium text-gray-600 mb-1">所属部门</label><select name="department" value={formData.department || ''} onChange={handleChange} className="w-full bg-gray-50 border border-gray-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-indigo-500"><option value="" disabled>请选择所属部门</option>{managementData.departments.map(d => <option key={d} value={d}>{d}</option>)}</select></div>
+                        </div>
+                        <div className="space-y-4">
+                            <div><label className="block text-sm font-medium text-gray-600 mb-1">合同金额</label><div className="flex"><input type="number" name="contractAmount" value={formData.contractAmount || ''} onChange={handleChange} className="w-full bg-gray-50 border border-gray-300 rounded-l-md px-3 py-2 focus:ring-2 focus:ring-indigo-500" placeholder="请输入金额" /><select name="contractUnit" value={formData.contractUnit || '元'} onChange={handleChange} className="bg-gray-100 border-t border-b border-r border-gray-300 rounded-r-md px-2 focus:ring-2 focus:ring-indigo-500"><option>元</option><option>万元</option></select></div></div>
+                            <div><label className="block text-sm font-medium text-gray-600 mb-1">任务下达日期</label><input type="date" name="createdAt" value={formatDate(formData.createdAt)} onChange={(e) => setFormData({...formData, createdAt: new Date(e.target.value)})} className="w-full bg-gray-50 border border-gray-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-indigo-500" /></div>
+                            <div><label className="block text-sm font-medium text-gray-600 mb-1">合同规定完成日期</label><input type="date" name="contractualDueDate" value={formData.contractualDueDate || ''} onChange={handleChange} className="w-full bg-gray-50 border border-gray-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-indigo-500" /></div>
+                        </div>
+                    </div>
+                    <footer className="mt-8 pt-4 border-t border-gray-200 flex justify-end gap-4"><button type="button" onClick={onClose} className="px-4 py-2 rounded-md text-gray-700 bg-gray-200 hover:bg-gray-300 font-semibold">取消</button><button type="submit" className="px-6 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700 font-semibold">保存</button></footer>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+// --- Progress Modal ---
+const ProgressModal = ({ isOpen, onClose, onSave, task }) => {
+    const [newProgress, setNewProgress] = useState('');
+    const sortedProgress = useMemo(() => {
+        if (!task || !Array.isArray(task.progressDetails)) return [];
+        return [...task.progressDetails].sort((a, b) => b.timestamp - a.timestamp);
+    }, [task]);
+    if (!isOpen) return null;
+    const handleSave = () => { if (newProgress.trim()) { onSave(task._id, newProgress.trim()); setNewProgress(''); onClose(); } };
+    return (<div className="fixed inset-0 bg-black bg-opacity-70 z-50 flex justify-center items-center p-4"><div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col text-gray-800"><header className="flex justify-between items-center p-4 border-b border-gray-200"><h2 className="text-xl font-bold text-gray-900">项目进展日志</h2><button onClick={onClose} className="p-2 rounded-full hover:bg-gray-100"><X className="text-gray-500" /></button></header><div className="p-6 flex-grow overflow-y-auto"><h3 className="text-lg font-semibold text-gray-700 mb-4">历史记录</h3><div className="space-y-4 max-h-60 overflow-y-auto pr-2">{sortedProgress.length > 0 ? sortedProgress.map((entry, index) => (<div key={index} className="bg-gray-100 p-3 rounded-lg"><p className="text-gray-800">{entry.text}</p><p className="text-xs text-gray-500 mt-2 text-right">{formatDateTime(entry.timestamp)}</p></div>)) : <p className="text-gray-500">暂无历史记录。</p>}</div><div className="mt-6"><label className="block text-sm font-medium text-gray-600 mb-2">添加新进展</label><textarea value={newProgress} onChange={(e) => setNewProgress(e.target.value)} rows="4" className="w-full bg-gray-50 border border-gray-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-indigo-500" placeholder="在此输入最新的项目进展..."/></div></div><footer className="p-4 flex justify-end gap-4 bg-gray-50 rounded-b-xl"><button onClick={onClose} className="px-4 py-2 rounded-md text-gray-700 bg-gray-200 hover:bg-gray-300 font-semibold">取消</button><button onClick={handleSave} className="px-6 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700 font-semibold">保存进展</button></footer></div></div>);
+};
+
+// --- Complete Task Modal ---
+const CompleteTaskModal = ({ isOpen, onClose, onConfirm, task }) => {
+    const [completionDate, setCompletionDate] = useState(formatDate(new Date()));
+    if (!isOpen) return null;
+    return (<div className="fixed inset-0 bg-black bg-opacity-70 z-50 flex justify-center items-center p-4"><div className="bg-white text-gray-800 rounded-xl shadow-2xl w-full max-w-md"><header className="p-4"><h2 className="text-xl font-bold text-gray-900">完成任务</h2><p className="text-sm text-gray-500 mt-1">请确认任务 "{task?.projectName}" 的实际完成日期。</p></header><div className="p-4"><label className="block text-sm font-medium text-gray-600 mb-1">实际完成日期</label><input type="date" value={completionDate} onChange={(e) => setCompletionDate(e.target.value)} className="w-full bg-gray-50 border border-gray-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-indigo-500" /></div><footer className="p-4 flex justify-end gap-4 bg-gray-50 rounded-b-xl"><button onClick={onClose} className="px-4 py-2 rounded-md text-gray-700 bg-gray-200 hover:bg-gray-300 font-semibold">取消</button><button onClick={() => onConfirm(task, completionDate)} className="px-6 py-2 rounded-md text-white bg-green-600 hover:bg-green-700 font-semibold">确认完成</button></footer></div></div>);
+};
+
+// --- Filter Component (Reusable for Stats and Export) ---
+const TaskFilter = ({ tasks, onFilterChange, managementData }) => {
+    const [filters, setFilters] = useState({ taskType: 'all', department: 'all', salesPerson: 'all', projectManager: 'all', dateFilterType: 'createdAt', startDate: '', endDate: '', archiveStatus: 'all' });
+    
+    useEffect(() => { onFilterChange(filters); }, [filters, onFilterChange]);
+    const handleFilterChange = (e) => { const { name, value } = e.target; setFilters(prev => ({ ...prev, [name]: value })); };
+    
+    return (<div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4 mb-6"><select name="taskType" value={filters.taskType} onChange={handleFilterChange} className="bg-gray-100 border-gray-300 rounded-md px-3 py-2 text-gray-800"><option value="all">所有任务类型</option>{[...new Set(tasks.map(t => t.taskType))].map(t => <option key={t} value={t}>{t}</option>)}</select><select name="department" value={filters.department} onChange={handleFilterChange} className="bg-gray-100 border-gray-300 rounded-md px-3 py-2 text-gray-800"><option value="all">所有部门</option>{managementData.departments.map(d => <option key={d} value={d}>{d}</option>)}</select><select name="salesPerson" value={filters.salesPerson} onChange={handleFilterChange} className="bg-gray-100 border-gray-300 rounded-md px-3 py-2 text-gray-800"><option value="all">所有业务人员</option>{managementData.salesPersons.map(p => <option key={p} value={p}>{p}</option>)}</select><select name="projectManager" value={filters.projectManager} onChange={handleFilterChange} className="bg-gray-100 border-gray-300 rounded-md px-3 py-2 text-gray-800"><option value="all">所有项目负责人</option>{managementData.projectManagers.map(p => <option key={p} value={p}>{p}</option>)}</select><select name="archiveStatus" value={filters.archiveStatus} onChange={handleFilterChange} className="bg-gray-100 border-gray-300 rounded-md px-3 py-2 text-gray-800"><option value="all">所有存档状态</option><option value="archived">已存档</option><option value="not-archived">未存档</option></select><select name="dateFilterType" value={filters.dateFilterType} onChange={handleFilterChange} className="bg-gray-100 border-gray-300 rounded-md px-3 py-2 text-gray-800"><option value="createdAt">任务下达时间</option><option value="actualCompletionDate">实际完成日期</option></select><div className="flex gap-2 col-span-2 lg:col-span-1"><input type="date" name="startDate" value={filters.startDate} onChange={handleFilterChange} className="w-full bg-gray-100 border-gray-300 rounded-md px-3 py-2 text-gray-800"/><input type="date" name="endDate" value={filters.endDate} onChange={handleFilterChange} className="w-full bg-gray-100 border-gray-300 rounded-md px-3 py-2 text-gray-800"/></div></div>);
+};
+
+// --- Statistics Modal ---
+const StatisticsModal = ({ isOpen, onClose, tasks, managementData }) => {
+    const [filters, setFilters] = useState(null);
+    const handleFilterChange = useCallback((newFilters) => { setFilters(newFilters); }, []);
+    const filteredTasks = useMemo(() => { if (!filters) return []; return tasks.filter(task => { const { taskType, department, salesPerson, projectManager, dateFilterType, startDate, endDate, archiveStatus } = filters; if (taskType !== 'all' && task.taskType !== taskType) return false; if (department !== 'all' && task.department !== department) return false; if (salesPerson !== 'all' && task.salesPerson !== salesPerson) return false; if (projectManager !== 'all' && task.projectManager !== projectManager) return false; if (archiveStatus !== 'all') { if (archiveStatus === 'archived' && !task.isArchived) return false; if (archiveStatus === 'not-archived' && task.isArchived) return false; } if (startDate) { const taskDate = new Date(task[dateFilterType]); if (!taskDate || taskDate < new Date(startDate)) return false; } if (endDate) { const taskDate = new Date(task[dateFilterType]); if (!taskDate || taskDate > new Date(endDate)) return false; } return true; }); }, [tasks, filters]);
+    const totalAmount = useMemo(() => { return filteredTasks.reduce((sum, task) => { let amount = parseFloat(task.contractAmount) || 0; if (task.contractUnit === '万元') { amount *= 10000; } return sum + amount; }, 0); }, [filteredTasks]);
+    if (!isOpen) return null;
+    return (<div className="fixed inset-0 bg-black bg-opacity-70 z-50 flex justify-center items-center p-4"><div className="bg-white text-gray-800 rounded-xl shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col"><header className="flex justify-between items-center p-4 border-b border-gray-200"><h2 className="text-xl font-bold text-gray-900">统计分析</h2><button onClick={onClose} className="p-2 rounded-full hover:bg-gray-100"><X className="text-gray-500" /></button></header><div className="p-6 overflow-y-auto"><TaskFilter tasks={tasks} onFilterChange={handleFilterChange} managementData={managementData} /><div className="flex gap-4 mb-6"><div className="p-4 bg-slate-100 rounded-lg flex-1 text-center"><div className="text-2xl font-bold text-indigo-600">{filteredTasks.length}</div><div className="text-sm text-gray-500">任务总数</div></div><div className="p-4 bg-slate-100 rounded-lg flex-1 text-center"><div className="text-2xl font-bold text-green-600">{totalAmount.toLocaleString('zh-CN')}</div><div className="text-sm text-gray-500">合同总金额 (元)</div></div></div><div className="overflow-x-auto max-h-96"><table className="w-full text-sm text-left text-gray-600"><thead className="text-xs text-gray-700 uppercase bg-gray-100 sticky top-0"><tr><th className="px-4 py-2">任务编号</th><th className="px-4 py-2">项目名称</th><th className="px-4 py-2">项目负责人</th><th className="px-4 py-2">合同金额</th><th className="px-4 py-2">下达日期</th><th className="px-4 py-2">完成日期</th></tr></thead><tbody>{filteredTasks.map(task => (<tr key={task._id} className="bg-white border-b border-gray-200"><td className="px-4 py-2 text-gray-900">{task.customTaskId}</td><td className="px-4 py-2 text-gray-900">{task.projectName}</td><td className="px-4 py-2">{task.projectManager}</td><td className="px-4 py-2">{task.contractAmount ? `${task.contractAmount.toLocaleString('zh-CN')} ${task.contractUnit}` : 'N/A'}</td><td className="px-4 py-2">{formatDate(task.createdAt)}</td><td className="px-4 py-2">{formatDate(task.actualCompletionDate)}</td></tr>))}</tbody></table></div></div><footer className="p-4 flex justify-end gap-4 bg-gray-50 rounded-b-xl"><button onClick={() => exportData('excel', filteredTasks, "统计结果")} className="px-6 py-2 rounded-md text-white bg-blue-600 hover:bg-blue-700 font-semibold flex items-center gap-2"><Download size={16}/>下载统计结果</button></footer></div></div>);
+};
+
+// --- Export Modal ---
+const ExportModal = ({ isOpen, onClose, tasks, managementData }) => {
+    const [filters, setFilters] = useState(null);
+    const handleFilterChange = useCallback((newFilters) => { setFilters(newFilters); }, []);
+    const filteredTasks = useMemo(() => { if (!filters) return []; return tasks.filter(task => { const { taskType, department, salesPerson, projectManager, dateFilterType, startDate, endDate, archiveStatus } = filters; if (taskType !== 'all' && task.taskType !== taskType) return false; if (department !== 'all' && task.department !== department) return false; if (salesPerson !== 'all' && task.salesPerson !== salesPerson) return false; if (projectManager !== 'all' && task.projectManager !== projectManager) return false; if (archiveStatus !== 'all') { if (archiveStatus === 'archived' && !task.isArchived) return false; if (archiveStatus === 'not-archived' && task.isArchived) return false; } if (startDate) { const taskDate = new Date(task[dateFilterType]); if (!taskDate || taskDate < new Date(startDate)) return false; } if (endDate) { const taskDate = new Date(task[dateFilterType]); if (!taskDate || taskDate > new Date(endDate)) return false; } return true; }); }, [tasks, filters]);
+    if (!isOpen) return null;
+    return (<div className="fixed inset-0 bg-black bg-opacity-70 z-50 flex justify-center items-center p-4"><div className="bg-white text-gray-800 rounded-xl shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col"><header className="flex justify-between items-center p-4 border-b border-gray-200"><h2 className="text-xl font-bold text-gray-900">导出选项</h2><button onClick={onClose} className="p-2 rounded-full hover:bg-gray-100"><X className="text-gray-500" /></button></header><div className="p-6 overflow-y-auto"><div className="mb-6 border-b border-gray-200 pb-6"><h3 className="text-lg font-semibold text-gray-700 mb-4">快速导出</h3><div className="flex gap-4"><button onClick={() => exportData('excel', tasks.filter(t=>t.status==='inprogress'), "进行中任务")} className="flex-1 px-6 py-3 rounded-md text-white bg-blue-600 hover:bg-blue-700 font-semibold">导出所有进行中任务</button><button onClick={() => exportData('excel', tasks.filter(t=>t.status==='done'), "已完成任务")} className="flex-1 px-6 py-3 rounded-md text-white bg-green-600 hover:bg-green-700 font-semibold">导出所有已完成任务</button></div></div><div><h3 className="text-lg font-semibold text-gray-700 mb-4">筛选并导出</h3><TaskFilter tasks={tasks} onFilterChange={handleFilterChange} managementData={managementData} /><div className="mt-4 p-4 bg-slate-100 rounded-lg"><p className="text-gray-600">已筛选出 <span className="font-bold text-indigo-600">{filteredTasks.length}</span> 个任务。</p></div></div></div><footer className="p-4 flex justify-end gap-4 bg-gray-50 rounded-b-xl"><div className="flex gap-2"><button onClick={() => exportData('excel', filteredTasks, "筛选结果")} className="px-4 py-2 rounded-md text-white bg-green-600 hover:bg-green-700 font-semibold" disabled={filteredTasks.length === 0}>Excel</button><button onClick={() => exportData('pdf', filteredTasks, "筛选结果")} className="px-4 py-2 rounded-md text-white bg-red-600 hover:bg-red-700 font-semibold" disabled={filteredTasks.length === 0}>PDF</button><button onClick={() => exportData('png', filteredTasks, "筛选结果")} className="px-4 py-2 rounded-md text-white bg-purple-600 hover:bg-purple-700 font-semibold" disabled={filteredTasks.length === 0}>图片</button></div></footer></div></div>);
+};
+
+// --- Import Modal ---
+const ImportModal = ({ isOpen, onClose, onDownloadTemplate, onImportClick }) => {
+    if (!isOpen) return null;
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-70 z-50 flex justify-center items-center p-4">
+            <div className="bg-white text-gray-800 rounded-xl shadow-2xl w-full max-w-md">
+                <header className="flex justify-between items-center p-4 border-b border-gray-200"><h2 className="text-xl font-bold text-gray-900">导入任务</h2><button onClick={onClose} className="p-2 rounded-full hover:bg-gray-100"><X className="text-gray-500" /></button></header>
+                <div className="p-6 space-y-4">
+                    <p className="text-gray-600">请先下载模板文件，按照格式填写任务信息后，再上传文件进行批量导入。</p>
+                    <button onClick={onDownloadTemplate} className="w-full px-6 py-3 rounded-md text-white bg-blue-600 hover:bg-blue-700 font-semibold flex items-center justify-center gap-2"><Download size={16}/>下载模板</button>
+                    <button onClick={onImportClick} className="w-full px-6 py-3 rounded-md text-white bg-teal-600 hover:bg-teal-700 font-semibold flex items-center justify-center gap-2"><Upload size={16}/>上传文件</button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// --- Task List Header Component ---
+const ListHeader = ({ currentView }) => {
+    const isDoneView = currentView === 'done';
+    const gridColsClass = isDoneView ? "grid-cols-[1fr_2fr_1.5fr_1.5fr_1fr_1fr_1fr_2.5fr_1.5fr_1.5fr_1.5fr_1fr_1fr]" : "grid-cols-[1fr_2fr_1.5fr_1.5fr_1fr_1fr_1fr_2.5fr_1.5fr_1.5fr_1.5fr_1fr]";
+    return (<div className={`grid ${gridColsClass} gap-4 px-4 py-3 bg-slate-200 text-xs font-semibold text-gray-500 uppercase tracking-wider sticky top-0 z-10 text-center`}><div className="truncate">任务编号</div><div className="truncate">项目名称</div><div className="truncate">任务类型</div><div className="truncate">所属部门</div><div className="truncate">合同金额</div><div className="truncate">业务人员</div><div className="truncate">项目负责人</div><div className="truncate">项目进展情况</div><div className="truncate">任务下达时间</div><div className="truncate">合同规定完成日期</div>{!isDoneView && <div className="truncate">剩余时间</div>}{isDoneView && <div className="truncate">实际完成日期</div>}{isDoneView && <div className="truncate">存档状态</div>}<div className="truncate">操作</div></div>);
+};
+
+// --- Task Row Component ---
+const TaskRow = ({ task, onEdit, onComplete, onArchive, onOpenProgress, onVoid, currentView }) => {
+    const isDoneView = currentView === 'done';
+    let timeRemainingText = ''; let timeRemainingColorClass = 'text-gray-700'; let tooltipMessage = '';
+    if (currentView === 'inprogress' && task.contractualDueDate) {
+        const today = new Date(); today.setHours(0, 0, 0, 0); const dueDate = new Date(task.contractualDueDate); dueDate.setHours(0, 0, 0, 0);
+        const diffTime = dueDate.getTime() - today.getTime(); const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        if (diffDays < 0) { timeRemainingText = `已逾期 ${-diffDays} 天`; timeRemainingColorClass = 'text-red-600'; tooltipMessage = `火烧眉毛啦！再不干活就要被老板抓走了！🔥`; } 
+        else if (diffDays <= 7) { timeRemainingText = `剩余 ${diffDays} 天`; timeRemainingColorClass = 'text-yellow-600'; tooltipMessage = `最后冲刺阶段，胜利就在眼前！🏆`; } 
+        else { timeRemainingText = `剩余 ${diffDays} 天`; timeRemainingColorClass = 'text-green-600'; tooltipMessage = `稳住，我们能赢！😎`; }
+    }
+    const gridColsClass = isDoneView ? "grid-cols-[1fr_2fr_1.5fr_1.5fr_1fr_1fr_1fr_2.5fr_1.5fr_1.5fr_1.5fr_1fr_1fr]" : "grid-cols-[1fr_2fr_1.5fr_1.5fr_1fr_1fr_1fr_2.5fr_1.5fr_1.5fr_1.5fr_1fr]";
+    const latestProgress = useMemo(() => { if (!task.progressDetails || !Array.isArray(task.progressDetails) || task.progressDetails.length === 0) return '暂无进展'; const sorted = [...task.progressDetails].sort((a, b) => b.timestamp - a.timestamp); return sorted[0].text; }, [task.progressDetails]);
+    return (<div className={`grid ${gridColsClass} gap-4 px-4 py-4 items-center bg-white border-b border-gray-200 text-sm text-gray-700 text-center`} title={tooltipMessage}><div className="font-mono text-xs whitespace-normal break-words" title={task.customTaskId}>{task.customTaskId}</div><div className="font-semibold text-gray-900 whitespace-normal break-words" title={task.projectName}>{task.projectName}</div><div className="whitespace-normal break-words" title={task.taskType}>{task.taskType}</div><div className="whitespace-normal break-words" title={task.department}>{task.department}</div><div className="text-green-600 font-semibold whitespace-normal break-words">{task.contractAmount ? `${task.contractAmount.toLocaleString('zh-CN')} ${task.contractUnit}` : 'N/A'}</div><div className="whitespace-normal break-words" title={task.salesPerson}>{task.salesPerson || 'N/A'}</div><div className="whitespace-normal break-words" title={task.projectManager}>{task.projectManager}</div><div onClick={() => onOpenProgress(task)} className="text-gray-500 truncate cursor-pointer hover:text-indigo-600 flex items-center justify-center gap-2" title={latestProgress}><MessageSquare size={16} />{latestProgress}</div><div className="whitespace-normal break-words">{formatDate(task.createdAt)}</div><div className="whitespace-normal break-words">{formatDate(task.contractualDueDate)}</div>{!isDoneView && <div className={`truncate font-medium ${timeRemainingColorClass}`}>{timeRemainingText || '-'}</div>}{isDoneView && <div className="truncate">{formatDate(task.actualCompletionDate)}</div>}{isDoneView && (<div className="flex justify-center items-center">{task.isArchived ? (<span className="flex items-center text-green-600"><CheckCircle size={16} className="mr-1" /> 已存档</span>) : (<button onClick={() => onArchive(task._id)} className="p-2 rounded-md text-gray-600 bg-yellow-100 hover:bg-yellow-200 transition-all flex items-center gap-1" title="存档任务"><Archive size={16} /></button>)}</div>)}<div className="flex items-center justify-center gap-2"><button onClick={() => onEdit(task)} className="p-2 rounded-md text-white bg-blue-600 hover:bg-blue-700 transition-all" title="编辑"><Edit size={16} /></button>{task.status === 'inprogress' && (<><button onClick={() => onComplete(task)} className="p-2 rounded-md text-white bg-green-600 hover:bg-green-700 transition-all" title="完成"><Check size={16} /></button><button onClick={() => onVoid(task._id)} className="p-2 rounded-md text-white bg-red-600 hover:bg-red-700 transition-all" title="作废"><Ban size={16} /></button></>)}</div></div>);
+};
+
+// --- Main App Component ---
+function App() {
+    const [tasks, setTasks] = useState([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [modalError, setModalError] = useState(null);
+    const [isAuthReady, setIsAuthReady] = useState(false);
+    const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
+    const [editingTask, setEditingTask] = useState(null);
+    const [isCompleteModalOpen, setIsCompleteModalOpen] = useState(false);
+    const [completingTask, setCompletingTask] = useState(null);
+    const [isProgressModalOpen, setIsProgressModalOpen] = useState(false);
+    const [progressTask, setProgressTask] = useState(null);
+    const [isStatsModalOpen, setIsStatsModalOpen] = useState(false);
+    const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+    const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+    const [currentView, setCurrentView] = useState('inprogress');
+    const [departmentFilter, setDepartmentFilter] = useState('all');
+    const [managementData, setManagementData] = useState({ departments: INITIAL_DEPARTMENTS, salesPersons: INITIAL_SALES_PERSONS, projectManagers: INITIAL_PROJECT_MANAGERS });
+    const [tcb, setTcb] = useState({ app: null, auth: null, db: null, _: null });
+
+    useEffect(() => {
+        const init = async () => {
+            try {
+                await loadScript(SCRIPTS.tcb);
+                const app = window.cloudbase.init(cloudbaseConfig);
+                const auth = app.auth();
+                const db = app.database();
+                const _ = db.command;
+                setTcb({ app, auth, db, _ });
+                
+                await auth.anonymousAuthProvider().signIn();
+                setIsAuthReady(true);
+
+            } catch (e) {
+                setError("应用初始化失败，请检查您的网络连接和环境ID配置。");
+                console.error(e);
+                setIsLoading(false);
+            }
+        };
+        init();
+    }, []);
+
+    useEffect(() => {
+        if (!isAuthReady || !tcb.db) return;
+        setIsLoading(true);
+
+        const watcher = tcb.db.collection('tasks').watch(snapshot => {
+            const tasksData = snapshot.docs.map(doc => ({ ...doc, _id: doc._id }));
+            tasksData.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+            setTasks(tasksData);
+            setIsLoading(false);
+        }, err => {
+            console.error("Snapshot error:", err);
+            setError("无法从数据库加载任务。");
+            setIsLoading(false);
+        });
+
+        return () => watcher.close();
+    }, [isAuthReady, tcb.db]);
+
+    const handleOpenModal = (task = null) => { setEditingTask(task); setIsTaskModalOpen(true); };
+    const handleCloseModal = () => { setIsTaskModalOpen(false); setEditingTask(null); setModalError(null); };
+    const handleOpenCompleteModal = (task) => { setCompletingTask(task); setIsCompleteModalOpen(true); };
+    const handleCloseCompleteModal = () => { setIsCompleteModalOpen(false); setCompletingTask(null); };
+    const handleOpenProgressModal = (task) => { setProgressTask(task); setIsProgressModalOpen(true); };
+    const handleCloseProgressModal = () => { setIsProgressModalOpen(false); setProgressTask(null); };
+    const handleOpenStatsModal = () => setIsStatsModalOpen(true);
+    const handleCloseStatsModal = () => setIsStatsModalOpen(false);
+    const handleOpenExportModal = () => setIsExportModalOpen(true);
+    const handleCloseExportModal = () => setIsExportModalOpen(false);
+    const handleOpenImportModal = () => setIsImportModalOpen(true);
+    const handleCloseImportModal = () => setIsImportModalOpen(false);
+
+    const handleSaveTask = async (taskData, isEdit) => {
+        if (!tcb.db) return;
+        setModalError(null);
+        const { total } = await tcb.db.collection('tasks').where({ customTaskId: taskData.customTaskId }).count();
+        if (!isEdit && total > 0) {
+            setModalError(`任务编号 "${taskData.customTaskId}" 已存在，请输入一个唯一的编号。`);
+            return;
+        }
+        const dataToSave = { ...taskData };
+        if (dataToSave.contractAmount) { dataToSave.contractAmount = parseFloat(dataToSave.contractAmount); } else { delete dataToSave.contractAmount; }
+        if (dataToSave.contractualDueDate) dataToSave.contractualDueDate = new Date(dataToSave.contractualDueDate);
+        if (dataToSave.actualCompletionDate) dataToSave.actualCompletionDate = new Date(dataToSave.actualCompletionDate);
+        
+        try {
+            if (isEdit) {
+                const { _id, ...updateData } = dataToSave;
+                await tcb.db.collection('tasks').doc(_id).update(updateData);
+            } else {
+                await tcb.db.collection('tasks').add(dataToSave);
+            }
+            handleCloseModal();
+        } catch (err) {
+            console.error("Save task error:", err);
+            setModalError("无法保存任务。");
+        }
+    };
+    
+    const handleConfirmCompleteTask = async (taskToComplete, completionDate) => {
+        if (!tcb.db) return;
+        try {
+            await tcb.db.collection('tasks').doc(taskToComplete._id).update({ status: 'done', actualCompletionDate: new Date(completionDate) });
+            handleCloseCompleteModal();
+        } catch (err) {
+            console.error("Complete task error:", err);
+            setError("无法更新任务状态。");
+        }
+    };
+
+    const handleArchiveTask = async (taskId) => {
+        if (!tcb.db) return;
+        try { await tcb.db.collection('tasks').doc(taskId).update({ isArchived: true }); }
+        catch (err) { console.error("Archive task error:", err); setError("无法存档任务。"); }
+    };
+
+    const handleVoidTask = async (taskId) => {
+        if (!tcb.db) return;
+        try { await tcb.db.collection('tasks').doc(taskId).update({ status: 'void' }); }
+        catch (err) { console.error("Void task error:", err); setError("无法作废任务。"); }
+    };
+
+    const handleSaveProgress = async (taskId, newProgressText) => {
+        if (!tcb.db) return;
+        try {
+            await tcb.db.collection('tasks').doc(taskId).update({
+                progressDetails: tcb._.push({ text: newProgressText, timestamp: new Date() })
+            });
+        } catch (err) {
+            console.error("Save progress error:", err);
+            setError("无法保存项目进展。");
+        }
+    };
+    
+    const handleDownloadTemplate = async () => { try { await loadScript(SCRIPTS.xlsx); const templateHeaders = ["customTaskId", "projectName", "taskType", "department", "contractAmount", "contractUnit", "salesPerson", "projectManager", "contractualDueDate"]; const ws = window.XLSX.utils.aoa_to_sheet([templateHeaders]); const wb = window.XLSX.utils.book_new(); window.XLSX.utils.book_append_sheet(wb, ws, "Tasks"); window.XLSX.writeFile(wb, "任务导入模板.xlsx"); } catch (error) { console.error(error); setError('无法加载导出功能所需的库。'); } };
+    const handleImportClick = async () => { try { await loadScript(SCRIPTS.xlsx); document.getElementById('fileUploader').click(); } catch (error) { console.error(error); setError('无法加载导入功能所需的库。'); }};
+    const handleFileUpload = (event) => { const file = event.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = async (e) => { try { const data = new Uint8Array(e.target.result); const workbook = window.XLSX.read(data, { type: 'array' }); const sheetName = workbook.SheetNames[0]; const worksheet = workbook.Sheets[sheetName]; const json = window.XLSX.utils.sheet_to_json(worksheet); if (json.length === 0) { setError("导入的文件为空。"); return; } 
+    for (const task of json) {
+        await tcb.db.collection('tasks').add({
+            customTaskId: task.customTaskId || '', projectName: task.projectName || '', taskType: task.taskType || TASK_TYPES[0], department: task.department || DEPARTMENTS[0],
+            contractAmount: parseFloat(task.contractAmount) || null, contractUnit: task.contractUnit || '元', salesPerson: task.salesPerson || SALES_PERSONS[0],
+            projectManager: task.projectManager || PROJECT_MANAGERS[0], contractualDueDate: task.contractualDueDate ? new Date((task.contractualDueDate - (25567 + 2)) * 86400 * 1000) : null,
+            status: 'inprogress', isArchived: false, progressDetails: [], createdAt: new Date(),
+        });
+    }
+    alert(`${json.length} 个任务已成功导入！`); } catch (err) { console.error("Import error:", err); setError("导入文件失败，请确保文件格式正确。"); } }; reader.readAsArrayBuffer(file); event.target.value = ''; };
+    
+    const filteredTasks = tasks.filter(task => {
+        const viewMatch = task.status === currentView;
+        const departmentMatch = departmentFilter === 'all' || task.department === departmentFilter;
+        return viewMatch && departmentMatch;
+    });
+
+    const NavButton = ({ view, label }) => { const count = tasks.filter(t => t.status === view && (departmentFilter === 'all' || t.department === departmentFilter)).length; return (<button onClick={() => setCurrentView(view)} className={`px-4 py-2 text-sm font-semibold rounded-md transition-colors ${currentView === view ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-700 hover:text-white'}`}>{label} ({count})</button>); };
+    const minWidthClass = "min-w-[2100px]";
+
+    return (
+        <div className="bg-slate-100 text-gray-800 min-h-screen font-sans">
+            <input type="file" id="fileUploader" className="hidden" accept=".xlsx, .xls" onChange={handleFileUpload} />
+            <TaskModal isOpen={isTaskModalOpen} onClose={handleCloseModal} onSave={handleSaveTask} task={editingTask} error={modalError} setError={setModalError} managementData={managementData} />
+            <CompleteTaskModal isOpen={isCompleteModalOpen} onClose={handleCloseCompleteModal} onConfirm={handleConfirmCompleteTask} task={completingTask} />
+            <ProgressModal isOpen={isProgressModalOpen} onClose={handleCloseProgressModal} onSave={handleSaveProgress} task={progressTask} />
+            <StatisticsModal isOpen={isStatsModalOpen} onClose={handleCloseStatsModal} tasks={tasks} managementData={managementData} />
+            <ExportModal isOpen={isExportModalOpen} onClose={handleCloseExportModal} tasks={tasks} managementData={managementData} />
+            <ImportModal isOpen={isImportModalOpen} onClose={handleCloseImportModal} onDownloadTemplate={handleDownloadTemplate} onImportClick={handleImportClick} />
+            
+            {error && <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[100] bg-red-100 border border-red-300 text-red-800 px-6 py-3 rounded-lg shadow-lg flex items-center gap-4"><AlertTriangle size={20} /><span>{error}</span><button onClick={() => setError(null)}><X size={16}/></button></div>}
+
+            <div className="p-4 sm:p-6 md:p-8">
+                <header className="flex flex-col md:flex-row justify-between items-center mb-4 gap-4">
+                     <div className="text-center md:text-left">
+                        <h1 className="text-3xl md:text-4xl font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-purple-600">任务管理系统</h1>
+                         <p className="text-gray-500 mt-1">由 React, Tencent Cloud Base 和 Gemini 驱动</p>
+                    </div>
+                    <div className="flex items-center flex-wrap justify-center gap-2">
+                        <button onClick={() => handleOpenModal()} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-3 rounded-md flex items-center gap-2"><Plus size={20} />新增任务</button>
+                        <button className="bg-slate-700 hover:bg-slate-800 text-white font-bold py-2 px-3 rounded-md flex items-center gap-2 relative"><Bell size={16} />消息提醒 <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">0</span></button>
+                        <button onClick={handleOpenStatsModal} className="bg-slate-700 hover:bg-slate-800 text-white font-bold py-2 px-3 rounded-md flex items-center gap-2"><BarChart2 size={16} />统计</button>
+                        <button onClick={handleOpenImportModal} className="bg-slate-700 hover:bg-slate-800 text-white font-bold py-2 px-3 rounded-md flex items-center gap-2"><Upload size={16} />导入</button>
+                        <button onClick={handleOpenExportModal} className="bg-slate-700 hover:bg-slate-800 text-white font-bold py-2 px-3 rounded-md flex items-center gap-2"><Download size={16} />导出</button>
+                        <button className="bg-slate-700 hover:bg-slate-800 text-white font-bold py-2 px-3 rounded-md flex items-center gap-2"><Settings size={16} />管理</button>
+                    </div>
+                </header>
+                
+                <nav className="p-2 bg-white/80 backdrop-blur-sm rounded-lg flex flex-col sm:flex-row justify-between items-center mb-8 gap-4 shadow-sm border border-gray-200">
+                    <div className="flex items-center flex-wrap justify-center gap-2 p-1.5 bg-gray-200/50 rounded-lg">
+                        <NavButton view="inprogress" label="进行中" />
+                        <NavButton view="done" label="已完成" />
+                        <NavButton view="void" label="作废" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <label htmlFor="departmentFilter" className="text-sm font-medium text-gray-600">部门:</label>
+                        <select id="departmentFilter" value={departmentFilter} onChange={(e) => setDepartmentFilter(e.target.value)} className="bg-white border-gray-300 rounded-md px-3 py-2 text-gray-800 text-sm font-semibold focus:ring-2 focus:ring-indigo-500">
+                            <option value="all">所有部门</option>
+                            {managementData.departments.map(d => <option key={d} value={d}>{d}</option>)}
+                        </select>
+                    </div>
+                </nav>
+
+                {isLoading ? (
+                    <div className="flex justify-center items-center mt-16"><Loader className="animate-spin text-indigo-600" size={48} /><p className="ml-4 text-lg text-gray-500">正在加载任务...</p></div>
+                ) : (
+                    <main className="w-full bg-white rounded-lg shadow-md overflow-hidden border border-gray-200">
+                        <div className="overflow-x-auto">
+                           <div className={minWidthClass} id="task-table-for-export">
+                                <ListHeader currentView={currentView} />
+                                <div>
+                                    {filteredTasks.length > 0 ? (
+                                        filteredTasks.map(task => (
+                                            <TaskRow key={task._id} task={task} onEdit={handleOpenModal} onComplete={handleOpenCompleteModal} onArchive={handleArchiveTask} onOpenProgress={handleOpenProgressModal} onVoid={handleVoidTask} currentView={currentView} />
+                                        ))
+                                    ) : (
+                                        <div className="text-center py-16 px-6 bg-white"><h3 className="text-xl font-semibold text-gray-700">这里空空如也</h3><p className="text-gray-500 mt-2">{currentView === 'inprogress' ? '所有任务都完成了，或者您可以添加一个新任务！' : '该分类下没有任务。'}</p></div>
+                                    )}
+                                </div>
+                           </div>
+                        </div>
+                    </main>
+                )}
+            </div>
+        </div>
+    );
+}
+
+export default App;
